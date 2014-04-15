@@ -1,10 +1,10 @@
 from __future__ import division
 import codecs
-import datetime
 import os
 import pprint
+import math
 
-from datetime import datetime
+from datetime import datetime, date
 
 BROWSING = '0'
 BUYING = '1'
@@ -21,6 +21,15 @@ SCORE_MAP = {
 
 THRESHOLD_ACTION_TYPE = BUYING
 
+YEAR = '2014'
+LATEST_DATE = datetime(int(YEAR), 8, 16)
+TIME_SCORE_UNIT = 30
+
+BRNAD_ID = 'brand_id'
+ACTION_TYPE = 'action_type'
+TIME = 'time'
+UID = 'uid'
+
 def count_user(file_path='data_source/t_alibaba_data.csv'):
     command = \
         "awk 'BEGIN{FS=","}{if(!($1 in d)){d[$1] = 1}}END{for(i in d){n++} print n}' data_source/t_alibaba_data.csv"
@@ -30,10 +39,10 @@ def get_sorted_uid_by_record_number(data):
     return [e[0]['uid'] for e in sorted(data.values(), key=lambda x: len(x), reverse=True)]
 
 
-def get_file(file_path='data_source/t_alibaba_data.csv'):
+def get_file(file_path='data_source/t_alibaba_data.csv', key=UID):
 
     def _convert_time(time_str):
-        return datetime.strptime(time_str, '%m-%d')
+        return datetime.strptime('%s-%s' % (YEAR, time_str), '%Y-%m-%d')
 
     result = {}
     with codecs.open(file_path, 'r', encoding='gb18030') as f:
@@ -47,7 +56,7 @@ def get_file(file_path='data_source/t_alibaba_data.csv'):
 
     return result
 
-def get_user_records_group_by_final_status(data):
+def get_user_records_group_by_final_status(data, enhance=True):
     # eg:
     # { 
     #     BROWSING: {
@@ -80,12 +89,13 @@ def get_user_records_group_by_final_status(data):
             action_type_result[brand] = records
 
             # enhance to make count
-            sub_action_type_data = _group_by(records, 'action_type')
-            tmp_result = {}
-            for key, value in sub_action_type_data.iteritems():
-                count = len(value)
-                tmp_result[key] = count
-            action_type_result[brand] = tmp_result 
+            if enhance:
+                sub_action_type_data = _group_by(records, 'action_type')
+                tmp_result = {}
+                for key, value in sub_action_type_data.iteritems():
+                    count = len(value)
+                    tmp_result[key] = count
+                action_type_result[brand] = tmp_result 
             # end enhance
 
         result[action_type] = action_type_result
@@ -100,14 +110,14 @@ def predict(data):
     # step 3. find the threshold value
     # step 4. find the posible prediction
 
-    average = _get_the_avertage_browse_times(data)
+    average = _get_the_average_browse_times(data)
     product_score_map = _score_for_product(data, average)
     threshold_score = _calculation_threshold_value(data, product_score_map)
     predict = _get_the_posible_product(data, product_score_map, threshold_score)
     return predict
 
 
-def _get_the_avertage_browse_times(data):
+def _get_the_average_browse_times(data):
     brand_group_data = _group_by(data, 'brand_id')
     total_action = sum([len(value) for value in brand_group_data.values()])
     value = total_action/len(brand_group_data.keys())
@@ -115,8 +125,28 @@ def _get_the_avertage_browse_times(data):
 
 
 def _score_for_product(data, average):
-    group_data = get_user_records_group_by_final_status(data)    
+
+    def _get_end_date(data):
+        threshold_list = [e['time'] for e in data if e['action_type'] == THRESHOLD_ACTION_TYPE]
+        if threshold_list:
+            return sorted(threshold_list)[0]
+        else:
+            return LATEST_DATE
+
+    def _get_date_score(data, end_date):
+        distance = sum([(end_date - e['time']).days for e in data])
+        value = distance / len(data)
+        if value == 0:
+            return 1
+        try:
+            return 1 / math.sqrt(value / TIME_SCORE_UNIT)
+        except:
+            return 1
+
+    group_data = get_user_records_group_by_final_status(data)
     product_score_map = {}
+
+    # action score
     for action_type, brands_data in group_data.iteritems():
         for brand, brand_data in brands_data.iteritems():
             brand_score = 0
@@ -125,13 +155,24 @@ def _score_for_product(data, average):
                     value = (int(count) / average)
                     brand_score += _accuracy(value) * SCORE_MAP[action_type]
             product_score_map[brand] = brand_score
+
+    # time score
+    full_group_data = get_user_records_group_by_final_status(data, False)
+    full_brand_data = {}
+    [full_brand_data.update(e) for e in full_group_data.values()]
+    for brand, action_score in product_score_map.iteritems():
+        records = full_brand_data[brand]
+        end_date = _get_end_date(records)
+        date_score = _get_date_score(records, end_date)
+        product_score_map[brand] = action_score * date_score
+
     return product_score_map
 
 
 def _calculation_threshold_value(data, product_score_map):
     group_data = get_user_records_group_by_final_status(data)
     threshold_group_data = \
-        [product_score_map[brand] for brand in group_data[THRESHOLD_ACTION_TYPE].keys()]
+        [_accuracy(product_score_map[brand] / action_type_data[THRESHOLD_ACTION_TYPE]) for brand, action_type_data in group_data[THRESHOLD_ACTION_TYPE].iteritems()]
     if not threshold_group_data:
         return None
     value = sum(threshold_group_data) / len(threshold_group_data)
@@ -139,6 +180,8 @@ def _calculation_threshold_value(data, product_score_map):
 
 
 def _get_the_posible_product(data, product_score_map, threshold_score):
+    if not threshold_score:
+        return []
     predict = []
     group_data = get_user_records_group_by_final_status(data)
     for action_type, brands_data in group_data.iteritems():
@@ -149,7 +192,7 @@ def _get_the_posible_product(data, product_score_map, threshold_score):
     return predict
 
 
-def _group_by(data, key_name):
+def _group_by(data, key_name, cnt=False):
     result = {}
     for line in data:
         key = line[key_name]
@@ -157,6 +200,9 @@ def _group_by(data, key_name):
             result[key].append(line)
         else:
             result[key] = [line]
+    if cnt:
+        for key, data in result.iteritems():
+            result[key] = len(data)
     return result
 
 
@@ -176,9 +222,10 @@ if __name__ == '__main__':
         if brand_ids:
             print '%s \t %s' %  (uid, ','.join(brand_ids))
 
-    # uid = '3257000'
-    # brand_ids = predict(data[uid])
+    # print sum([len(predict(data[uid])) for uid in sorted_uids])
+    # uid = '1441500'
     # format_print(get_user_records_group_by_final_status(data[uid]))
+    # format_print(predict(data[uid]))
 
 
 

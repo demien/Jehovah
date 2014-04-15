@@ -1,3 +1,6 @@
 special case
 1. if user buy some products regular
 2. if last action date is ancient, the probability is decrease
+3. if product bought by many people, should increase the probability
+4. if products bought by some one, the group is likely to bought for others
+5. if products in cart, more probability to buy the group
